@@ -28,7 +28,6 @@ import (
 	"github.com/containernetworking/cni/libcni"
 	cnitypes "github.com/containernetworking/cni/pkg/types"
 	resourcev1 "k8s.io/api/resource/v1"
-	"k8s.io/klog/v2"
 	"sigs.k8s.io/cni-dra-driver/apis/v1alpha1"
 )
 
@@ -168,8 +167,10 @@ func (rntm *Runtime) add(
 	return result, nil
 }
 
-// DetachNetworks detaches all network interfaces associated with a given pod.
-// It is typically called during pod teardown to clean up network resources.
+// DetachNetworks detaches network interfaces from a pod based on the provided ResourceClaim.
+// It processes the ResourceClaim's device allocation status, extracts CNI configuration for each device,
+// and invokes the CNI DEL operation for each relevant device to clean up network resources.
+// If a request fails, an error is returned and the detach operation stops at the failed device.
 func (rntm *Runtime) DetachNetworks(
 	ctx context.Context,
 	podSandBoxID string,
@@ -177,8 +178,92 @@ func (rntm *Runtime) DetachNetworks(
 	podName string,
 	podNamespace string,
 	podNetworkNamespace string,
-) error {
-	klog.FromContext(ctx).Info("Runtime.DetachNetworks", "podSandBoxID", podSandBoxID, "podUID", podUID, "podName", podName, "podNamespace", podNamespace, "podNetworkNamespace", podNetworkNamespace)
+	claim *resourcev1.ResourceClaim,
+) (*resourcev1.ResourceClaim, error) {
+	if claim == nil || claim.Status.Allocation == nil {
+		return claim, nil
+	}
 
+	requestConfig := map[string]*v1alpha1.CNIConfig{}
+	for _, config := range claim.Status.Allocation.Devices.Config {
+		if config.Opaque == nil || config.Opaque.Driver != rntm.DriverName {
+			continue
+		}
+
+		for _, request := range config.Requests {
+			if _, exists := requestConfig[request]; exists {
+				continue // Multiple Config for a single request is not supported.
+			}
+
+			cniConfig := &v1alpha1.CNIConfig{}
+			err := json.Unmarshal(config.Opaque.Parameters.Raw, cniConfig)
+			if err != nil { // Not a CNI Config
+				continue
+			}
+
+			requestConfig[request] = cniConfig
+		}
+	}
+
+	for _, result := range claim.Status.Allocation.Devices.Results {
+		if result.Driver != rntm.DriverName {
+			continue
+		}
+
+		cniConfig, exists := requestConfig[result.Request]
+		if !exists {
+			return claim, fmt.Errorf("failed to find the cni config for request %q in claim %q", result.Request, claim.Name)
+		}
+
+		err := rntm.del(
+			ctx,
+			podSandBoxID,
+			podUID,
+			podName,
+			podNamespace,
+			podNetworkNamespace,
+			cniConfig,
+		)
+		if err != nil {
+			return claim, err
+		}
+
+		removeAllocatedDeviceStatusFromResourceClaimStatus(claim, &result)
+	}
+
+	return claim, nil
+}
+
+func (rntm *Runtime) del(
+	ctx context.Context,
+	podSandBoxID string,
+	podUID string,
+	podName string,
+	podNamespace string,
+	podNetworkNamespace string,
+	cniConfig *v1alpha1.CNIConfig,
+) error {
+	rt := &libcni.RuntimeConf{
+		ContainerID: podSandBoxID,
+		NetNS:       podNetworkNamespace,
+		IfName:      cniConfig.IfName,
+		Args: [][2]string{
+			{"IgnoreUnknown", "true"},
+			{"K8S_POD_NAMESPACE", podNamespace},
+			{"K8S_POD_NAME", podName},
+			{"K8S_POD_INFRA_CONTAINER_ID", podSandBoxID},
+			{"K8S_POD_UID", podUID},
+		},
+	}
+
+	confList, err := libcni.ConfListFromBytes(cniConfig.Config.Raw)
+	if err != nil {
+		return fmt.Errorf("failed to ConfListFromBytes: %v", err)
+	}
+
+	err = rntm.CNIConfig.DelNetworkList(ctx, confList, rt)
+	if err != nil {
+		return fmt.Errorf("failed to DelNetworkList: %v", err)
+	}
 	return nil
 }

@@ -19,6 +19,7 @@ package cni
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	cnitypes "github.com/containernetworking/cni/pkg/types"
 	cni100 "github.com/containernetworking/cni/pkg/types/100"
@@ -37,6 +38,18 @@ func addAllocatedDeviceStatusToResourceClaimStatus(claim *resourcev1.ResourceCla
 	}
 
 	claim.Status.Devices = append(claim.Status.Devices, allocatedDeviceStatus)
+}
+
+func removeAllocatedDeviceStatusFromResourceClaimStatus(claim *resourcev1.ResourceClaim, deviceRequestAllocationResult *resourcev1.DeviceRequestAllocationResult) {
+	deviceID := structured.MakeDeviceID(deviceRequestAllocationResult.Driver, deviceRequestAllocationResult.Pool, deviceRequestAllocationResult.Device)
+	sharedDeviceID := structured.MakeSharedDeviceID(deviceID, deviceRequestAllocationResult.ShareID)
+
+	for i, device := range claim.Status.Devices {
+		if getDeviceID(device) == sharedDeviceID {
+			claim.Status.Devices = slices.Delete(claim.Status.Devices, i, i)
+			return
+		}
+	}
 }
 
 func getDeviceID(device resourcev1.AllocatedDeviceStatus) structured.SharedDeviceID {

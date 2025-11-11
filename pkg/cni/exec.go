@@ -21,10 +21,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
-	"strings"
 	"syscall"
 	"time"
 
@@ -68,7 +68,7 @@ func (e *RawExec) ExecPlugin(ctx context.Context, pluginPath string, stdinData [
 
 		// If the plugin is currently about to be written, then we wait a
 		// second and try it again
-		if strings.Contains(err.Error(), "text file busy") {
+		if errors.Is(err, syscall.ETXTBSY) {
 			time.Sleep(time.Second)
 			continue
 		}

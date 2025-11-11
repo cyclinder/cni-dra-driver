@@ -9,7 +9,6 @@ require (
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/onsi/gomega v1.37.0
 	github.com/spf13/cobra v1.9.1
-	github.com/vishvananda/netlink v1.3.1
 	k8s.io/api v0.34.0
 	k8s.io/apimachinery v0.34.0
 	k8s.io/client-go v0.34.0

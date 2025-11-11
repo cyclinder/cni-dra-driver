@@ -54,7 +54,8 @@ type CNIRuntime interface {
 		podName string,
 		podNamespace string,
 		podNetworkNamespace string,
-	) error
+		claim *resourcev1.ResourceClaim,
+	) (*resourcev1.ResourceClaim, error)
 }
 
 // UpdateStatus is a function updating the status of the devices for a ResourceClaim.
@@ -99,7 +100,7 @@ func (p *Plugin) StopPodSandbox(ctx context.Context, pod *api.PodSandbox) error 
 		return fmt.Errorf("error getting network namespace for pod '%s' in namespace '%s'", pod.Name, pod.Namespace)
 	}
 
-	err := p.CNI.DetachNetworks(ctx, pod.Id, pod.Uid, pod.Name, pod.Namespace, podNetworkNamespace)
+	err := p.detachNetworks(ctx, pod.Id, pod.Uid, pod.Name, pod.Namespace, podNetworkNamespace)
 	if err != nil {
 		return fmt.Errorf("error CNI.DetachNetworks for pod '%s' (uid: %s) in namespace '%s': %v", pod.Name, pod.Uid, pod.Namespace, err)
 	}
@@ -151,6 +152,40 @@ func (p *Plugin) attachNetworks(
 		}
 	}
 
+	if p.UpdateStatusFunc != nil {
+		for _, claim := range updatedClaims {
+			updateErr := p.UpdateStatusFunc(ctx, claim)
+			if updateErr != nil {
+				err = errors.Join(err, fmt.Errorf("failed to update status: %v", err))
+			}
+		}
+	}
+
+	return err
+}
+
+func (p *Plugin) detachNetworks(
+	ctx context.Context,
+	podSandBoxID string,
+	podUID string,
+	podName string,
+	podNamespace string,
+	podNetworkNamespace string,
+) error {
+	var err error
+	claims := p.PodResourceStore.Get(types.UID(podUID))
+
+	klog.FromContext(ctx).Info("detach networks on pod", "podName", podName, "podUID", podUID)
+	updatedClaims := []*resourcev1.ResourceClaim{}
+	for _, claim := range claims {
+		claim, err = p.CNI.DetachNetworks(ctx, podSandBoxID, podUID, podName, podNamespace, podNetworkNamespace, claim)
+		if err != nil {
+			break
+		}
+		updatedClaims = append(updatedClaims, claim)
+	}
+
+	// Do we need to update the status of the ResourceClaims? the resourceclaim will be deleted if the pod is deleted.
 	if p.UpdateStatusFunc != nil {
 		for _, claim := range updatedClaims {
 			updateErr := p.UpdateStatusFunc(ctx, claim)
